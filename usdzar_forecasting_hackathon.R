@@ -32,8 +32,6 @@ platinum <- read_csv(file.path(DATA_DIR, "Platinum_Futures_Historical_Data.csv")
             price = as.numeric(gsub(",", "", Price))) %>%
   arrange(date)
 
-# VIXCLS is FRED daily data with NA rows on market holidays
-# We take the last available close on/before each Friday of the panel grid
 vix_daily <- read_csv(file.path(DATA_DIR, "VIXCLS.csv"), show_col_types = FALSE) %>%
   transmute(date = as.Date(observation_date), vix = as.numeric(VIXCLS)) %>%
   filter(!is.na(vix)) %>%
@@ -69,13 +67,9 @@ panel <- fx %>%
   filter(if_all(c(rate_diff, infl_diff, dlog_platinum), ~ !is.na(.))) %>%
   select(date, usdzar, rate_diff, infl_diff, dlog_platinum, dlog_vix, vix, sa_repo, us_ffr, price)
 
-stopifnot("strictly increasing fridays" =
-    all(diff(panel$date) == 7) && all(weekdays(panel$date) == "Friday"),
+stopifnot("strictly increasing fridays" = all(diff(panel$date) == 7) && all(weekdays(panel$date) == "Friday"),
   "no NAs in final panel" = !any(is.na(panel %>% select(-price))),
-  "eval window covers 2021-2025" =
-    min(panel$date) <= as.Date("2021-01-01") &&
-    max(panel$date) >= as.Date("2025-12-01")
-)
+  "eval window covers 2021-2025" = min(panel$date) <= as.Date("2021-01-01") && max(panel$date) >= as.Date("2025-12-01"))
 cat(sprintf("Panel: %d Fridays, %s to %s\n", nrow(panel), min(panel$date), max(panel$date)))
 
 # 3. summary statistics table
@@ -85,33 +79,22 @@ summary_tbl <- panel %>%
   select(usdzar, rate_diff, infl_diff, dlog_platinum, dlog_vix) %>%
   pivot_longer(everything(), names_to = "variable", values_to = "x") %>%
   group_by(variable) %>%
-  summarise(n = n(),
-            mean = mean(x),
-            median = median(x),
-            sd = sd(x),
-            min = min(x),
-            max = max(x),
-            .groups = "drop") %>%
+  summarise(n = n(), mean = mean(x), median = median(x), sd = sd(x),
+            min = min(x), max = max(x), .groups = "drop") %>%
   mutate(across(mean:max, ~ round(., 4)))
-
-print(summary_tbl)
 write_csv(summary_tbl, file.path(OUT_DIR, "summary_statistics.csv"))
 
-# Rendered PNG table for the slide deck
+# rendered PNG table for the presentation 
 p_stats <- summary_tbl %>%
   gridExtra::tableGrob(rows = NULL, theme = gridExtra::ttheme_minimal())
-ggsave(file.path(OUT_DIR, "summary_statistics.png"), p_stats,
-       width = 9, height = 2.5, dpi = 200)
+ggsave(file.path(OUT_DIR, "summary_statistics.png"), p_stats, width = 9, height = 2.5, dpi = 200)
 
 # 4. rolling forecast loop
 # ============================================================================
 H <- 4
 xreg_full <- panel %>%
-  transmute(date,
-            rate_diff_lag = lag(rate_diff, 1),
-            infl_diff_lag = lag(infl_diff, 1),
-            dlog_platinum_lag = lag(dlog_platinum, 1),
-            dlog_vix = dlog_vix) %>%        # unlagged by design (see B)
+  transmute(date, rate_diff_lag = lag(rate_diff, 1), infl_diff_lag = lag(infl_diff, 1),
+            dlog_platinum_lag = lag(dlog_platinum, 1), dlog_vix = dlog_vix) %>%        # (note) unlagged 
   filter(if_all(-date, ~ !is.na(.)))
 
 panel_use <- panel %>% select(-dlog_vix) %>% inner_join(xreg_full, by = "date")
@@ -119,9 +102,7 @@ panel_use <- panel %>% select(-dlog_vix) %>% inner_join(xreg_full, by = "date")
 vars3 <- c("rate_diff_lag", "infl_diff_lag", "dlog_platinum_lag")
 vars4 <- c(vars3, "dlog_vix")
 
-origins <- panel_use$date[
-  panel_use$date >= as.Date("2021-01-01") &
-    panel_use$date <= (max(panel_use$date) - 7 * H)]
+origins <- panel_use$date[panel_use$date >= as.Date("2021-01-01") & panel_use$date <= (max(panel_use$date) - 7 * H)]
 
 results <- vector("list", length(origins))
 for (i in seq_along(origins)) {
@@ -134,8 +115,8 @@ for (i in seq_along(origins)) {
   x3_tr <- as.matrix(train[, vars3])
   x4_tr <- as.matrix(train[, vars4])
   
-  # Freeze last observed regressor row across the 4-week horizon (as before).
-  # For dlog_vix this injects the origin-week risk shock into the forecast path.
+  # freeze last observed regressor row across the 4-week horizon
+  # for dlog_vix this injects the origin-week risk shock into the forecast path
   x3_fut <- matrix(rep(tail(x3_tr, 1), H), nrow = H, byrow = TRUE); colnames(x3_fut) <- vars3
   x4_fut <- matrix(rep(tail(x4_tr, 1), H), nrow = H, byrow = TRUE); colnames(x4_fut) <- vars4
   
@@ -151,8 +132,7 @@ for (i in seq_along(origins)) {
   actual_row <- panel_use %>% filter(date == target_date)
   if (nrow(actual_row) == 0) next
   
-  results[[i]] <- tibble(
-    forecast_date = origin, target_date = target_date,
+  results[[i]] <- tibble(forecast_date = origin, target_date = target_date,
     model = c("ar1", "arimax", "arimax_vix"),
     forecast = exp(c(fc_ar1_log, fc_arx_log, fc_vix_log)),
     actual = actual_row$usdzar)
@@ -163,7 +143,6 @@ forecasts_long <- bind_rows(results) %>% mutate(error = actual - forecast)
 rmse_tbl <- forecasts_long %>% group_by(model) %>%
   summarise(n = n(), rmse = sqrt(mean(error^2)), mae = mean(abs(error)),
             bias = mean(error), .groups = "drop") %>% arrange(rmse)
-print(rmse_tbl)
 
 # 5. diebold-mariano test (testing RSME gap)
 # ============================================================================
@@ -174,10 +153,7 @@ paired <- forecasts_long %>%
   pivot_wider(names_from = model, values_from = error) %>%
   arrange(target_date) %>% drop_na()
 
-dm_pairs <- list(
-  c("ar1", "arimax"),
-  c("ar1", "arimax_vix"),
-  c("arimax", "arimax_vix"))
+dm_pairs <- list( c("ar1", "arimax"), c("ar1", "arimax_vix"), c("arimax", "arimax_vix"))
 for (p in dm_pairs) {
   dm <- dm.test(paired[[p[1]]], paired[[p[2]]],
                 alternative = "two.sided", h = H, power = 2)
@@ -214,14 +190,13 @@ cat(sprintf( "\n--- Bootstrap 95%% CI on RMSE(AR1) - RMSE(ARIMAX+VIX) ---\n
 
 # Save numerics for the slide
 dm_res <- dm.test(paired$ar1, paired$arimax_vix, alternative = "two.sided", h = H, power = 2)
-bootstrap_out <- tibble(
-  point_gap = point_gap, ci_lower = ci[1], ci_median = ci[2], ci_upper = ci[3],
+bootstrap_out <- tibble(point_gap = point_gap, ci_lower = ci[1], ci_median = ci[2], ci_upper = ci[3],
   p_arimax_wins = mean(gap_star > 0),
   dm_stat = as.numeric(dm_res$statistic),
   dm_pvalue = as.numeric(dm_res$p.value))
 write_csv(bootstrap_out, file.path(OUT_DIR, "significance_tests.csv"))
 
-# Bootstrap-distribution plot
+# Bootstrap distribution plot
 p_boot <- tibble(gap = gap_star) %>%
   ggplot(aes(gap)) +
   geom_histogram(bins = 60, fill = "steelblue", alpha = 0.85) +
@@ -232,11 +207,10 @@ p_boot <- tibble(gap = gap_star) %>%
                           B, block_len),
        x = "RMSE gap (Rand); >0 means ARIMAX+VIX wins", y = "count") +
   theme_minimal(base_size = 12)
-ggsave(file.path(OUT_DIR, "plot_bootstrap_rmse_gap.png"),
-       p_boot, width = 8, height = 4.5, dpi = 200)
+ggsave(file.path(OUT_DIR, "plot_bootstrap_rmse_gap.png"), p_boot, width = 8, height = 4.5, dpi = 200)
 
 # Diagnostics
-# a. VIF — predictor redundancy check
+# a. VIF — check for predictor redundancy
 # ----------------------------------------------------------------------------
 
 vif_manual <- function(X) {
@@ -256,8 +230,7 @@ screen_df <- forecasts_long %>%
   filter(model == "ar1") %>%
   mutate(log_err = log(actual) - log(forecast)) %>%
   left_join(panel_use %>%
-              transmute(forecast_date = date,
-                        log_vix = log(vix),
+              transmute(forecast_date = date, log_vix = log(vix),
                         dlog_vix_0 = dlog_vix, # week ending AT origin
                         dlog_vix_lag = lag(dlog_vix, 1)), # lagged (info set safe)
             by = "forecast_date") %>%
@@ -269,35 +242,22 @@ for (v in c("log_vix", "dlog_vix_0", "dlog_vix_lag")) {
   cat(sprintf("%-13s beta = %+.4f  t = %+.2f  p = %.3f  R2 = %.4f\n",
               v, ct[2,1], ct[2,3], ct[2,4], summary(m)$r.squared))
 }
-# Expected pattern (verified on your forecasts_long.csv + VIXCLS.csv):
-#   log_vix      : p ~ 0.68  -> level has no 4-week predictive power
-#   dlog_vix_0   : p ~ 0.002 -> origin-week VIX spike predicts under-forecast
-#                               of rand depreciation (risk-off channel)
-#   dlog_vix_lag : p ~ 0.50  -> signal is gone once lagged a week
-# This is the slide-ready justification for either including dlog_vix
-# unlagged, or excluding VIX entirely as a disciplined rejection.
-
+                       
 # c. AIC/BIC ladder (checking for complexity) 
 # ----------------------------------------------------------------------------
 y_all <- log(panel_use$usdzar)
-ladder <- list(
-  "AR(1) only" = NULL,
-  "+ rate_diff" = "rate_diff_lag",
-  "+ infl_diff" = "infl_diff_lag",
-  "+ dlog_platinum" = "dlog_platinum_lag",
-  "3-predictor ARIMAX"= vars3,
-  "ARIMAX + dlog_vix" = vars4)
+ladder <- list("AR(1) only" = NULL, "+ rate_diff" = "rate_diff_lag", "+ infl_diff" = "infl_diff_lag", "+ dlog_platinum" = "dlog_platinum_lag",
+  "3-predictor ARIMAX"= vars3, "ARIMAX + dlog_vix" = vars4)
 
 ic_tbl <- imap_dfr(ladder, function(v, nm) {
   xr  <- if (is.null(v)) NULL else as.matrix(panel_use[, v, drop = FALSE])
   fit <- Arima(y_all, order = c(1,0,0), xreg = xr)
   tibble(model = nm, k = length(coef(fit)), AIC = AIC(fit), BIC = BIC(fit))
 }) %>% mutate(across(c(AIC, BIC), ~ round(., 1)))
-print(ic_tbl)
+
 write_csv(ic_tbl, file.path(OUT_DIR, "aic_bic_ladder.csv"))
-# NOTE: this is fitted on the FULL sample so it is an in-sample complexity
-# checking that complements (never replaces) the rolling out-of-sample RMSE,
-# which remains the headline evidence.
+# note: this is fitted on the full sample so it is an in-sample complexity - i shall use in the slides for presentation
+# checking that complements never replaces the rolling out-of-sample RMSE which we got and it remains the headline evidence
 
 # 7. future forecast: next 4 fridays from 24/07/2026
 # ============================================================================
@@ -337,7 +297,7 @@ future_tbl <- tibble(
   arimax_vix_mean = as.numeric(exp(fc_vix$mean)),
   arimax_vix_lo = as.numeric(exp(fc_vix$lower)),
   arimax_vix_hi = as.numeric(exp(fc_vix$upper)))
-print(future_tbl)
+
 write_csv(future_tbl, file.path(OUT_DIR, "future_forecast_4wk.csv"))
 
 hist_tail <- panel_use %>%
@@ -360,11 +320,9 @@ p_future <- ggplot() +
                        format(origin_future, "%d %b %Y")),
        subtitle = "Black = last 26 weeks actual. Shaded band = ARIMAX+VIX 95% CI.",
        x = NULL, y = "Rand per USD", colour = "Model") +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "top")
+  theme_minimal(base_size = 12) + theme(legend.position = "top")
 
-ggsave(file.path(OUT_DIR, "plot_future_forecast.png"),
-       p_future, width = 9, height = 4.8, dpi = 200)
+ggsave(file.path(OUT_DIR, "plot_future_forecast.png"), p_future, width = 9, height = 4.8, dpi = 200)
 
 # 8. plots
 # ============================================================================
@@ -399,8 +357,7 @@ p_rmse <- rmse_tbl %>%
 rolling_rmse <- forecasts_long %>%
   arrange(target_date) %>%
   group_by(model) %>%
-  mutate(sq_err = error^2,
-         roll_rmse = sqrt(zoo::rollmeanr(sq_err, k = 26, fill = NA))) %>%
+  mutate(sq_err = error^2, roll_rmse = sqrt(zoo::rollmeanr(sq_err, k = 26, fill = NA))) %>%
   ungroup()
 
 p_roll <- rolling_rmse %>%
@@ -425,16 +382,10 @@ ggsave(file.path(OUT_DIR, "plot_forecasts_vs_actual.png"), p_fc, width = 9, heig
 ggsave(file.path(OUT_DIR, "plot_rmse_bar.png"), p_rmse, width = 6, height = 4.0, dpi = 200)
 ggsave(file.path(OUT_DIR, "plot_rolling_rmse.png"), p_roll, width = 9, height = 4.5, dpi = 200)
 
-cat("\nSaved to ./outputs/:\n",
-    " forecasts_long.csv (schema: forecast_date, target_date, model, forecast, actual, error)\n",
-    " rmse_summary.csv (model, n, rmse, mae, bias; 3 models)\n",
-    " significance_tests.csv (bootstrap CI + DM test, AR1 vs ARIMAX+VIX)\n",
-    " vif_table.csv / aic_bic_ladder.csv (predictor diagnostics)\n",
-    " future_forecast_4wk.csv (all 3 models, 95% CIs)\n",
-    " plot_forecasts_vs_actual.png\n",
-    " plot_rmse_bar.png\n",
-    " plot_rolling_rmse.png\n",
-    " plot_bootstrap_rmse_gap.png\n",
+cat("\nSaved to ./outputs/:\n", " forecasts_long.csv (schema: forecast_date, target_date, model, forecast, actual, error)\n",
+    " rmse_summary.csv (model, n, rmse, mae, bias; 3 models)\n", " significance_tests.csv (bootstrap CI + DM test, AR1 vs ARIMAX+VIX)\n",
+    " vif_table.csv / aic_bic_ladder.csv (predictor diagnostics)\n", " future_forecast_4wk.csv (all 3 models, 95% CIs)\n",
+    " plot_forecasts_vs_actual.png\n", " plot_rmse_bar.png\n", " plot_rolling_rmse.png\n", " plot_bootstrap_rmse_gap.png\n",
     "  plot_future_forecast.png\n", sep = "")
 
 # ================================================================

@@ -1,0 +1,5 @@
+predictor,vif
+rate_diff_lag,1.883
+infl_diff_lag,1.881
+dlog_platinum_lag,1.063
+dlog_vix,1.061

@@ -1,0 +1,7 @@
+model,k,AIC,BIC
+AR(1) only,2,-4143.7,-4129.5
++ rate_diff,3,-4141.9,-4122.9
++ infl_diff,3,-4144,-4125.1
++ dlog_platinum,3,-4214.8,-4195.8
+3-predictor ARIMAX,5,-4211.9,-4183.5
+ARIMAX + dlog_vix,6,-4216.5,-4183.3
